@@ -1,3 +1,5 @@
+//const User = require('./User'); 
+const Note = require('./note'); 
 const express = require('express');
 const mongoose = require('mongoose'); 
 const bcrypt = require('bcrypt');
@@ -9,8 +11,8 @@ const PORT = 3000;
 app.use(express.json());
 
 // 1. MongoDB Connection 
-const mongoURI = "YOUR_MONGODB_URI_PLACEHOLDER";
-mongoose.connect(MONGO_URI)
+const mongoURI = 'mongodb+srv://<username>:<password>@cluster0.mongodb.net/myFirstDatabase?retryWrites=true&w=majoritymongodb+srv://admin:secretpassword123@cluster0.5u8mdrl.mongodb.net/?appName=Cluster0';
+mongoose.connect(mongoURI) 
     .then(() => console.log('Successfully connected to MongoDB!'))
     .catch((error) => console.error('Database connection error:', error));
 
@@ -84,6 +86,70 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
+// POST /api/notes - Create a new note for the authenticated user
+app.post('/api/notes', authenticateToken, async (req, res) => {
+    try {
+        const { title, content } = req.body;
+
+        // Validation to ensure title and content are provided
+        if (!title || !content) {
+            return res.status(400).json({ message: "Title and content are required" });
+        }
+
+        // Create the new note and link it to the user ID provided by authMiddleware
+        const newNote = new Note({
+            title,
+            content,
+            user: req.user.id // This comes directly from your verified JWT payload
+        });
+
+        // Save to MongoDB
+        await newNote.save();
+
+        res.status(201).json({
+            message: "Note created successfully",
+            note: newNote
+        });
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+});
+
+// GET /api/notes - Retrieve all notes belonging to the authenticated user
+app.get('/api/notes', authenticateToken, async (req, res) => {
+    try {
+        // Find notes where the 'user' field matches the ID from our token
+        const userNotes = await Note.find({ user: req.user.id , isArchived: false});
+        
+        res.status(200).json(userNotes);
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+});
+
+// GET /api/notes/:id - Fetch a single note by ID (with Owner validation & Populate)
+app.get('/api/notes/:id', authenticateToken, async (req, res) => {
+    try {
+        // Find the note by its URL ID and "populate" the user details
+        const note = await Note.findById(req.params.id).populate('user', 'name email');
+
+        // 1. Check if the note even exists
+        if (!note) {
+            return res.status(404).json({ message: "Note not found" });
+        }
+
+        // 2. OWNER VALIDATION: Make sure the note belongs to the logged-in user
+        // We compare the note's user ID with the ID from the JWT token
+        if (note.user._id.toString() !== req.user.id) {
+            return res.status(403).json({ message: "Access denied: You do not own this note" });
+        }
+
+        res.status(200).json(note);
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+});     
+
 // --- API ENDPOINTS (CRUD) ---
 
 // CREATE: Add a new user (Open)
@@ -115,6 +181,70 @@ app.get('/api/users/:id', async (req, res) => {
         res.status(200).json(user);
     } catch (error) {
         res.status(500).json({ message: error.message });
+    }
+});
+
+// 1. PUT /api/notes/:id - Update a note (Owner only)
+app.put('/api/notes/:id', authenticateToken, async (req, res) => {
+    try {
+        const { title, content } = req.body;
+        let note = await Note.findById(req.params.id);
+
+        if (!note) return res.status(404).json({ message: "Note not found" });
+
+        // Owner check
+        if (note.user.toString() !== req.user.id) {
+            return res.status(403).json({ message: "Access denied" });
+        }
+
+        // Update fields if provided
+        if (title) note.title = title;
+        if (content) note.content = content;
+
+        await note.save();
+        res.status(200).json({ message: "Note updated successfully", note });
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+});
+
+// 2. PATCH /api/notes/:id/archive - Soft-delete/Archive a note (Owner only)
+app.patch('/api/notes/:id/archive', authenticateToken, async (req, res) => {
+    try {
+        let note = await Note.findById(req.params.id);
+
+        if (!note) return res.status(404).json({ message: "Note not found" });
+        if (note.user.toString() !== req.user.id) {
+            return res.status(403).json({ message: "Access denied" });
+        }
+
+        // Toggle the archive status
+        note.isArchived = !note.isArchived;
+        await note.save();
+
+        res.status(200).json({ 
+            message: note.isArchived ? "Note archived successfully" : "Note unarchived successfully", 
+            note 
+        });
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+});
+
+// 3. DELETE /api/notes/:id - Hard delete a note (Owner only)
+app.delete('/api/notes/:id', authenticateToken, async (req, res) => {
+    try {
+        const note = await Note.findById(req.params.id);
+
+        if (!note) return res.status(404).json({ message: "Note not found" });
+        if (note.user.toString() !== req.user.id) {
+            return res.status(403).json({ message: "Access denied" });
+        }
+
+        await note.deleteOne();
+        res.status(200).json({ message: "Note permanently deleted" });
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
     }
 });
 
