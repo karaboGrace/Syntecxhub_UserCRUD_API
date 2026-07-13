@@ -11,7 +11,7 @@ const PORT = 3000;
 app.use(express.json());
 
 // 1. MongoDB Connection 
-const mongoURI = 'mongodb+srv://<username>:<password>@cluster0.mongodb.net/myFirstDatabase?retryWrites=true&w=majoritymongodb+srv://admin:secretpassword123@cluster0.5u8mdrl.mongodb.net/?appName=Cluster0';
+const mongoURI = 'mongodb+srv://admin:reallyreallyysecretpassword12344@cluster0.5u8mdrl.mongodb.net/?appName=Cluster0';
 mongoose.connect(mongoURI) 
     .then(() => console.log('Successfully connected to MongoDB!'))
     .catch((error) => console.error('Database connection error:', error));
@@ -21,7 +21,17 @@ const userSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     age: { type: Number, required: true },
-    password: { type: String, required: true }
+    password: { type: String, required: true },
+
+    role: { 
+        type: String, 
+        enum: ['user', 'admin'], 
+        default: 'user' 
+    },
+    isBlocked: { 
+        type: Boolean, 
+        default: false 
+    }
 });
 
 // Automatically hash password before saving to database
@@ -55,6 +65,14 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
+const authorizeRoles = (...allowedRoles) => {
+    return (req, res, next) => {
+        if (!req.user || !allowedRoles.includes(req.user.role)) {
+            return res.status(403).json({ message: "Access denied. Unauthorized role." });
+        }
+        next();
+    };
+};
 // --- API ENDPOINTS (AUTHENTICATION) ---
 
 // SIGNUP: Register a new user
@@ -79,7 +97,9 @@ app.post('/api/auth/login', async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(400).json({ message: 'Invalid email or password' });
 
-        const token = jwt.sign({ id: user._id }, 'MY_SUPER_SECRET_KEY', { expiresIn: '1h' });
+        const token = jwt.sign({ id: user._id, role: user.role}, 'MY_SUPER_SECRET_KEY', { expiresIn: '1h' },
+                                 
+        );
         res.status(200).json({ message: 'Login successful!', token });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -164,7 +184,7 @@ app.post('/api/users', async (req, res) => {
 });
 
 // READ ALL: Fetch all users (PROTECTED BY JWT!)
-app.get('/api/users', authenticateToken, async (req, res) => {
+app.get('/api/users', authenticateToken, authorizeRoles('admin'), async (req, res) => {
     try {
         const users = await User.find();
         res.status(200).json(users);
@@ -181,6 +201,46 @@ app.get('/api/users/:id', async (req, res) => {
         res.status(200).json(user);
     } catch (error) {
         res.status(500).json({ message: error.message });
+    }
+});
+
+// PROMOTE A USER TO ADMIN
+app.patch('/api/admin/users/:id/promote', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+    try {
+        const userToPromote = await User.findByIdAndUpdate(
+            req.params.id, 
+            { role: 'admin' }, 
+            { new: true }
+        ).select('-password');
+
+        if (!userToPromote) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        console.log(`[AUDIT LOG] Admin ${req.user.id} promoted user ${userToPromote._id} to admin.`);
+        res.status(200).json({ message: "User promoted to admin successfully", user: userToPromote });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+});
+
+// BLOCK / BAN A USER
+app.patch('/api/admin/users/:id/block', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+    try {
+        const userToBlock = await User.findByIdAndUpdate(
+            req.params.id, 
+            { isBlocked: true }, 
+            { new: true }
+        ).select('-password');
+
+        if (!userToBlock) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        console.log(`[AUDIT LOG] Admin ${req.user.id} blocked user ${userToBlock._id}.`);
+        res.status(200).json({ message: "User has been blocked", user: userToBlock });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
     }
 });
 
